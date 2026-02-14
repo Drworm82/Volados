@@ -47,6 +47,7 @@ export default function App() {
   async function loadRoomAndRounds(code) {
     setError("");
     setBusy(true);
+
     try {
       const { data: roomData, error: roomErr } = await supabase.rpc(
         "get_room",
@@ -135,7 +136,10 @@ export default function App() {
         (payload) => {
           const newRound = payload.new;
           if (newRound) {
-            setRounds((prev) => [newRound, ...(prev || [])].slice(0, 50));
+            setRounds((prev) => {
+              if (prev.some((r) => r.id === newRound.id)) return prev;
+              return [newRound, ...prev].slice(0, 50);
+            });
           }
         }
       )
@@ -150,6 +154,7 @@ export default function App() {
     setError("");
     const n = name.trim();
     if (!n) return setError("Escribe tu nombre.");
+
     setBusy(true);
 
     try {
@@ -159,13 +164,13 @@ export default function App() {
       if (rpcErr) throw rpcErr;
 
       const created = data?.[0];
-      if (!created?.code)
-        throw new Error("No se pudo crear la sala");
+      if (!created?.code) throw new Error("No se pudo crear la sala");
 
       const code = created.code.toUpperCase();
       setRoomCode(code);
       setRoomInQuery(code);
       setMode("room");
+
       await loadRoomAndRounds(code);
     } catch (e) {
       setError(e?.message || "Error creando sala");
@@ -174,7 +179,6 @@ export default function App() {
     }
   }
 
-  // 🔥 CORREGIDO AQUÍ
   async function onJoinRoom() {
     setError("");
     const n = name.trim();
@@ -184,16 +188,21 @@ export default function App() {
     if (!code) return setError("Escribe el código.");
 
     setBusy(true);
+
     try {
-      const { error: rpcErr } = await supabase.rpc("join_room", {
+      const { data, error: rpcErr } = await supabase.rpc("join_room", {
         p_code: code,
         p_player2_name: n,
       });
       if (rpcErr) throw rpcErr;
 
+      const joined = data?.[0];
+      if (!joined?.code) throw new Error("No se pudo unir a la sala");
+
       setRoomCode(code);
       setRoomInQuery(code);
       setMode("room");
+
       await loadRoomAndRounds(code);
     } catch (e) {
       setError(e?.message || "Error uniéndose a sala");
@@ -205,18 +214,18 @@ export default function App() {
   async function onFlip() {
     setError("");
     if (!roomCode) return;
+
     setBusy(true);
+
     try {
-      const { data, error: rpcErr } = await supabase.rpc(
-        "flip_coin",
-        { p_code: roomCode }
-      );
+      const { error: rpcErr } = await supabase.rpc("flip_coin", {
+        p_code: roomCode,
+      });
+
       if (rpcErr) throw rpcErr;
 
-      const round = data?.[0];
-      if (round) {
-        setRounds((prev) => [round, ...(prev || [])].slice(0, 50));
-      }
+      // No insertamos manualmente.
+      // Realtime se encarga.
     } catch (e) {
       setError(e?.message || "Error lanzando moneda");
     } finally {
@@ -240,15 +249,18 @@ export default function App() {
     navigator.clipboard?.writeText(url.toString()).catch(() => {});
   }
 
-  const canFlip =
-    !!room?.player2_name && room?.status === "ready";
+  const canFlip = !!room?.player2_name && room?.status === "ready";
 
   return (
     <div className="container">
       <div className="card">
         <h2>Volados</h2>
 
-        {error && <div style={{ color: "red" }}>{error}</div>}
+        {error && (
+          <div style={{ color: "red" }}>
+            <b>Error:</b> {error}
+          </div>
+        )}
 
         {mode === "home" && (
           <>
@@ -257,21 +269,13 @@ export default function App() {
               onChange={(e) => setName(e.target.value)}
               placeholder="Tu nombre"
             />
-
-            <button onClick={onCreateRoom} disabled={busy}>
-              Crear sala
-            </button>
-
+            <button onClick={onCreateRoom}>Crear sala</button>
             <input
               value={joinCode}
-              onChange={(e) =>
-                setJoinCode(e.target.value.toUpperCase())
-              }
+              onChange={(e) => setJoinCode(e.target.value)}
               placeholder="Código"
             />
-            <button onClick={onJoinRoom} disabled={busy}>
-              Unirse
-            </button>
+            <button onClick={onJoinRoom}>Unirse</button>
           </>
         )}
 
@@ -281,18 +285,13 @@ export default function App() {
               Sala: <b>{roomCode}</b>
             </p>
             <p>
-              {room?.player1_name} vs{" "}
-              {room?.player2_name || "Esperando..."}
+              {room?.player1_name} vs {room?.player2_name || "Esperando..."}
             </p>
-
-            <button
-              onClick={onFlip}
-              disabled={busy || !canFlip}
-            >
+            <button onClick={onFlip} disabled={!canFlip}>
               Lanzar moneda
             </button>
 
-            <h4>Historial</h4>
+            <h3>Historial</h3>
             {rounds.map((r) => (
               <div key={r.id}>
                 {r.result} - {formatTime(r.created_at)}
