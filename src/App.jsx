@@ -32,18 +32,26 @@ export default function App() {
   const [name, setName] = useState("");
   const [joinCode, setJoinCode] = useState("");
 
-  const [roomCode, setRoomCode] = useState(getRoomFromQuery());
+  const [roomCode, setRoomCode] = useState("");
   const [room, setRoom] = useState(null);
-
   const [rounds, setRounds] = useState([]);
+
   const roomIdRef = useRef(null);
 
   const isInRoom = useMemo(() => mode === "room" && roomCode, [mode, roomCode]);
 
-  async function loadRoomAndRounds(code) {
-    setBusy(true);
-    setError("");
+  // 🔥 IMPORTANTE: NO entrar directo con ?room
+  useEffect(() => {
+    const initial = getRoomFromQuery();
+    if (initial) {
+      setJoinCode(initial);
+      setRoomCode(initial);
+      setMode("home");
+    }
+  }, []);
 
+  async function loadRoomAndRounds(code) {
+    setError("");
     try {
       const { data: roomData, error: roomErr } = await supabase.rpc("get_room", {
         p_code: code,
@@ -56,29 +64,18 @@ export default function App() {
       setRoom(r);
       roomIdRef.current = r.room_id;
 
-      const { data: roundsData, error: roundsErr } = await supabase
+      const { data: roundsData } = await supabase
         .from("rounds")
         .select("id, result, created_at")
         .eq("room_id", r.room_id)
         .order("created_at", { ascending: false })
         .limit(50);
 
-      if (roundsErr) throw roundsErr;
       setRounds(roundsData || []);
     } catch (e) {
-      setError(e?.message || "Error cargando sala");
-    } finally {
-      setBusy(false);
+      setError(e.message);
     }
   }
-
-  useEffect(() => {
-    const initial = getRoomFromQuery();
-    if (initial) {
-      setMode("room");
-      setRoomCode(initial);
-    }
-  }, []);
 
   useEffect(() => {
     if (mode === "room" && roomCode) {
@@ -86,13 +83,14 @@ export default function App() {
     }
   }, [mode, roomCode]);
 
+  // Realtime
   useEffect(() => {
     if (!isInRoom || !roomIdRef.current) return;
 
     const roomId = roomIdRef.current;
 
     const channel = supabase
-      .channel(`room_${roomId}`)
+      .channel(`volados_room_${roomId}`)
       .on(
         "postgres_changes",
         {
@@ -102,16 +100,17 @@ export default function App() {
           filter: `id=eq.${roomId}`,
         },
         (payload) => {
-          if (payload.new) {
+          const newRow = payload.new;
+          if (newRow) {
             setRoom((prev) => ({
               ...(prev || {}),
-              room_id: payload.new.id,
-              code: payload.new.code,
-              player1_name: payload.new.player1_name,
-              player2_name: payload.new.player2_name,
-              status: payload.new.status,
-              created_at: payload.new.created_at,
-              updated_at: payload.new.updated_at,
+              room_id: newRow.id,
+              code: newRow.code,
+              player1_name: newRow.player1_name,
+              player2_name: newRow.player2_name,
+              status: newRow.status,
+              created_at: newRow.created_at,
+              updated_at: newRow.updated_at,
             }));
           }
         }
@@ -125,8 +124,9 @@ export default function App() {
           filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
-          if (payload.new) {
-            setRounds((prev) => [payload.new, ...(prev || [])].slice(0, 50));
+          const newRound = payload.new;
+          if (newRound) {
+            setRounds((prev) => [newRound, ...(prev || [])].slice(0, 50));
           }
         }
       )
@@ -138,171 +138,139 @@ export default function App() {
   }, [isInRoom, room?.room_id]);
 
   async function onCreateRoom() {
-    setError("");
-    const n = name.trim();
-    if (!n) return setError("Escribe tu nombre.");
-    setBusy(true);
+    if (!name.trim()) return setError("Escribe tu nombre.");
 
+    setBusy(true);
     try {
-      const { data, error } = await supabase.rpc("create_room", {
-        p_player1_name: n,
+      const { data } = await supabase.rpc("create_room", {
+        p_player1_name: name.trim(),
       });
-      if (error) throw error;
 
       const created = data?.[0];
-      const code = created?.code?.toUpperCase();
-      if (!code) throw new Error("No se pudo crear la sala");
+      const code = created.code.toUpperCase();
 
       setRoomCode(code);
       setRoomInQuery(code);
       setMode("room");
-      await loadRoomAndRounds(code);
     } catch (e) {
-      setError(e?.message || "Error creando sala");
+      setError(e.message);
     } finally {
       setBusy(false);
     }
   }
 
   async function onJoinRoom() {
-    setError("");
-    const n = name.trim();
-    const code = (joinCode || roomCode).trim().toUpperCase();
-
-    if (!n) return setError("Escribe tu nombre.");
-    if (!code) return setError("Escribe el código.");
+    if (!name.trim()) return setError("Escribe tu nombre.");
+    if (!joinCode.trim()) return setError("Escribe el código.");
 
     setBusy(true);
-
     try {
-      const { data, error } = await supabase.rpc("join_room", {
-        p_code: code,
-        p_player2_name: n,
+      const { data } = await supabase.rpc("join_room", {
+        p_code: joinCode.trim(),
+        p_player2_name: name.trim(),
       });
-      if (error) throw error;
+
+      const joined = data?.[0];
+      const code = joined.code.toUpperCase();
 
       setRoomCode(code);
       setRoomInQuery(code);
       setMode("room");
-      await loadRoomAndRounds(code);
     } catch (e) {
-      setError(e?.message || "Error uniéndose");
+      setError(e.message);
     } finally {
       setBusy(false);
     }
   }
 
   async function onFlip() {
-    setError("");
-    setBusy(true);
+    if (!roomCode) return;
 
+    setBusy(true);
     try {
-      const { error } = await supabase.rpc("flip_coin", {
+      await supabase.rpc("flip_coin", {
         p_code: roomCode,
       });
-      if (error) throw error;
-      // NO agregamos round manualmente
-      // Realtime lo insertará
     } catch (e) {
-      setError(e?.message || "Error lanzando moneda");
+      setError(e.message);
     } finally {
       setBusy(false);
     }
   }
 
+  function copyInviteLink() {
+    const url = new URL(window.location.href);
+    url.searchParams.set("room", roomCode);
+    navigator.clipboard?.writeText(url.toString());
+  }
+
   function onLeave() {
     setMode("home");
     setRoom(null);
-    setRounds([]);
     roomIdRef.current = null;
+    setRounds([]);
+    setJoinCode("");
     setRoomCode("");
     setRoomInQuery("");
-  }
-
-  function copyInviteLink() {
-    const url = `${window.location.origin}?room=${roomCode}`;
-    navigator.clipboard?.writeText(url);
-  }
-
-  function shareInviteLink() {
-    const url = `${window.location.origin}?room=${roomCode}`;
-    if (navigator.share) {
-      navigator.share({
-        title: "Volados",
-        text: "Únete a mi sala",
-        url,
-      });
-    } else {
-      copyInviteLink();
-    }
   }
 
   const canFlip = !!room?.player2_name && room?.status === "ready";
 
   return (
-    <div className="container">
-      <div className="card">
-        <h2>Volados</h2>
+    <div style={{ padding: 20 }}>
+      <h2>Volados</h2>
 
-        {error && <p style={{ color: "red" }}>{error}</p>}
+      {error && <p style={{ color: "red" }}>{error}</p>}
 
-        {mode === "home" && (
-          <>
-            <input
-              placeholder="Tu nombre"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
+      {mode === "home" && (
+        <>
+          <input
+            placeholder="Tu nombre"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <br /><br />
 
-            <div style={{ marginTop: 10 }}>
-              <button onClick={onCreateRoom} disabled={busy}>
-                Crear sala
-              </button>
+          <button onClick={onCreateRoom} disabled={busy}>
+            Crear sala
+          </button>
+
+          <br /><br />
+
+          <input
+            placeholder="Código"
+            value={joinCode}
+            onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+          />
+          <button onClick={onJoinRoom} disabled={busy}>
+            Unirse
+          </button>
+        </>
+      )}
+
+      {mode === "room" && (
+        <>
+          <p>Sala: <b>{roomCode}</b></p>
+          <p>Jugador 1: {room?.player1_name}</p>
+          <p>Jugador 2: {room?.player2_name || "Esperando..."}</p>
+
+          <button onClick={copyInviteLink}>Copiar link</button>
+          <button onClick={onLeave}>Salir</button>
+
+          <br /><br />
+
+          <button onClick={onFlip} disabled={!canFlip || busy}>
+            Lanzar moneda
+          </button>
+
+          <h4>Historial</h4>
+          {rounds.map((r) => (
+            <div key={r.id}>
+              {r.result} - {formatTime(r.created_at)}
             </div>
-
-            <div style={{ marginTop: 10 }}>
-              <input
-                placeholder="Código"
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value)}
-              />
-              <button onClick={onJoinRoom} disabled={busy}>
-                Unirse
-              </button>
-            </div>
-          </>
-        )}
-
-        {mode === "room" && (
-          <>
-            <p><b>Sala:</b> {roomCode}</p>
-            <p><b>Jugador 1:</b> {room?.player1_name}</p>
-            <p><b>Jugador 2:</b> {room?.player2_name || "Esperando..."}</p>
-
-            <button onClick={copyInviteLink}>Copiar link</button>
-            <button onClick={shareInviteLink}>Compartir</button>
-
-            <div style={{ marginTop: 15 }}>
-              <button onClick={onFlip} disabled={!canFlip || busy}>
-                Lanzar moneda
-              </button>
-            </div>
-
-            <div style={{ marginTop: 15 }}>
-              <h4>Historial</h4>
-              {rounds.map((r) => (
-                <div key={r.id}>
-                  {r.result} - {formatTime(r.created_at)}
-                </div>
-              ))}
-            </div>
-
-            <button style={{ marginTop: 20 }} onClick={onLeave}>
-              Salir
-            </button>
-          </>
-        )}
-      </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
