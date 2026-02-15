@@ -22,23 +22,26 @@ export default function App() {
   const [error, setError] = useState("");
 
   const [name, setName] = useState("");
-  const [joinCode, setJoinCode] = useState("");
+  const [joinCode, setJoinCode] = useState(getRoomFromQuery());
 
-  const [roomCode, setRoomCode] = useState(getRoomFromQuery());
+  const [roomCode, setRoomCode] = useState("");
   const [room, setRoom] = useState(null);
   const [rounds, setRounds] = useState([]);
-
   const [myChoice, setMyChoice] = useState(null);
 
   const roomIdRef = useRef(null);
 
-  const isInRoom = useMemo(() => mode === "room" && roomCode, [mode, roomCode]);
+  const isInRoom = useMemo(
+    () => mode === "room" && roomCode,
+    [mode, roomCode]
+  );
 
+  // 🚫 IMPORTANTE: NO entrar directo si hay ?room
   useEffect(() => {
     const initial = getRoomFromQuery();
     if (initial) {
-      setMode("room");
-      setRoomCode(initial);
+      setJoinCode(initial);
+      setMode("home");
     }
   }, []);
 
@@ -50,14 +53,18 @@ export default function App() {
 
   async function loadRoom(code) {
     setError("");
+
     const { data, error } = await supabase.rpc("get_room", {
       p_code: code,
     });
+
     if (error) return setError(error.message);
 
     const r = data?.[0];
+    if (!r) return setError("Sala no encontrada");
+
     setRoom(r);
-    roomIdRef.current = r?.room_id;
+    roomIdRef.current = r.room_id;
 
     const { data: roundsData } = await supabase
       .from("rounds")
@@ -72,15 +79,17 @@ export default function App() {
   useEffect(() => {
     if (!roomIdRef.current) return;
 
+    const roomId = roomIdRef.current;
+
     const channel = supabase
-      .channel("room")
+      .channel(`room_${roomId}`)
       .on(
         "postgres_changes",
         {
           event: "*",
           schema: "public",
           table: "rooms",
-          filter: `id=eq.${roomIdRef.current}`,
+          filter: `id=eq.${roomId}`,
         },
         (payload) => {
           setRoom((prev) => ({
@@ -95,7 +104,7 @@ export default function App() {
           event: "INSERT",
           schema: "public",
           table: "rounds",
-          filter: `room_id=eq.${roomIdRef.current}`,
+          filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
           setRounds((prev) => [payload.new, ...prev]);
@@ -111,16 +120,20 @@ export default function App() {
 
   async function onCreateRoom() {
     if (!name.trim()) return setError("Escribe tu nombre.");
+
     setBusy(true);
+
     const { data, error } = await supabase.rpc("create_room", {
       p_player1_name: name.trim(),
     });
+
     if (error) {
       setBusy(false);
       return setError(error.message);
     }
 
-    const code = data[0].code;
+    const code = data[0].code.toUpperCase();
+
     setRoomCode(code);
     setRoomInQuery(code);
     setMode("room");
@@ -132,8 +145,11 @@ export default function App() {
     if (!joinCode.trim()) return setError("Código requerido.");
 
     setBusy(true);
+
+    const code = joinCode.trim().toUpperCase();
+
     const { error } = await supabase.rpc("join_room", {
-      p_code: joinCode.trim().toUpperCase(),
+      p_code: code,
       p_player2_name: name.trim(),
     });
 
@@ -142,14 +158,17 @@ export default function App() {
       return setError(error.message);
     }
 
-    setRoomCode(joinCode.trim().toUpperCase());
-    setRoomInQuery(joinCode.trim().toUpperCase());
+    setRoomCode(code);
+    setRoomInQuery(code);
     setMode("room");
     setBusy(false);
   }
 
   async function choose(choice) {
+    if (!name.trim()) return setError("Nombre requerido.");
+
     setMyChoice(choice);
+
     await supabase.rpc("choose_side", {
       p_code: roomCode,
       p_player_name: name.trim(),
@@ -159,10 +178,13 @@ export default function App() {
 
   async function onFlip() {
     setBusy(true);
+
     const { error } = await supabase.rpc("flip_coin", {
       p_code: roomCode,
     });
+
     if (error) setError(error.message);
+
     setBusy(false);
   }
 
@@ -182,7 +204,9 @@ export default function App() {
               onChange={(e) => setName(e.target.value)}
             />
 
-            <button onClick={onCreateRoom}>Crear sala</button>
+            <button onClick={onCreateRoom} disabled={busy}>
+              Crear sala
+            </button>
 
             <hr />
 
@@ -193,11 +217,14 @@ export default function App() {
                 setJoinCode(e.target.value.toUpperCase())
               }
             />
-            <button onClick={onJoinRoom}>Unirse</button>
+
+            <button onClick={onJoinRoom} disabled={busy}>
+              Unirse
+            </button>
 
             {mpLink && (
               <div className="footer">
-                <a href={mpLink} target="_blank">
+                <a href={mpLink} target="_blank" rel="noreferrer">
                   ☕ Invítame un café
                 </a>
               </div>
@@ -215,16 +242,18 @@ export default function App() {
               {room.player1_name}{" "}
               {room.player1_choice ? "✔ listo" : ""}
             </p>
+
             <p>
               {room.player2_name || "Esperando..."}{" "}
               {room.player2_choice ? "✔ listo" : ""}
             </p>
 
-            {!myChoice && (
+            {!myChoice && !bothReady && (
               <div>
                 <button onClick={() => choose("aguila")}>
                   🦅 Águila
                 </button>
+
                 <button onClick={() => choose("sol")}>
                   🌞 Sol
                 </button>
@@ -238,9 +267,10 @@ export default function App() {
             )}
 
             <h3>Historial</h3>
+
             {rounds.map((r) => (
               <div key={r.id}>
-                {r.result.toUpperCase()}
+                {r.result?.toUpperCase()}
               </div>
             ))}
           </>
